@@ -1,11 +1,11 @@
 <#
 .SYNOPSIS
-    Deploy M365 baseline: enable security defaults, create a Conditional Access MFA baseline, and configure Defender for Business.
+    Deploy M365 baseline: enable security defaults, create a Conditional Access MFA baseline, configure Defender for Business, and manage sensitivity labels.
 
 .DESCRIPTION
     This script connects to Microsoft Graph, optionally enables Entra security defaults, creates
-    a Conditional Access policy to require MFA for users, and configures Microsoft Defender for Business
-    security baselines and policies. It supports -WhatIf/-Confirm and verbose output.
+    a Conditional Access policy to require MFA for users, configures Microsoft Defender for Business
+    security baselines and policies, and creates/publishes sensitivity labels. It supports -WhatIf/-Confirm and verbose output.
 
 .PARAMETER TenantId
     Optional tenant id to connect to.
@@ -31,6 +31,13 @@
 .PARAMETER ConfigureDefenderPolicies
     Configure Defender for Business endpoint protection and device compliance policies.
 
+.PARAMETER SensitivityLabelNames
+    Array of three sensitivity label names to create and publish (e.g., 'Internal', 'Confidential', 'Restricted').
+    If not specified, defaults to: 'General', 'Internal', 'Confidential'.
+
+.PARAMETER CreateSensitivityLabels
+    Create and publish sensitivity labels specified in -SensitivityLabelNames.
+
 .PARAMETER RunAllSteps
     Run all steps (same as specifying all step switches).
 
@@ -43,9 +50,13 @@
 .EXAMPLE
     .\deploy-m365-bp-baseline.ps1 -TenantId 'contoso.onmicrosoft.com' -BreakGlassUsers 'break@contoso.com' -RunAllSteps -Verbose
 
+.EXAMPLE
+    .\deploy-m365-bp-baseline.ps1 -SensitivityLabelNames 'Public', 'Internal', 'Secret' -CreateSensitivityLabels -Verbose
+
 .NOTES
     - Requires Microsoft.Graph modules. Script can install missing modules for current user.
     - Defender for Business configuration requires Intune admin rights.
+    - Sensitivity label configuration requires Information Protection admin rights.
     - Some Graph scopes require admin consent.
 #>
 
@@ -56,6 +67,8 @@ param(
     [string]$TenantId,
 
     [string[]]$BreakGlassUsers = @(),
+
+    [string[]]$SensitivityLabelNames = @('General', 'Internal', 'Confidential'),
 
     [switch]$SkipGraphConnection,
 
@@ -68,6 +81,8 @@ param(
     [switch]$DeployDefenderBaseline,
 
     [switch]$ConfigureDefenderPolicies,
+
+    [switch]$CreateSensitivityLabels,
 
     [switch]$RunAllSteps,
 
@@ -83,6 +98,7 @@ $MfaPolicyDisplayName = 'M365 BP Baseline - Require MFA for all users'
 $DefenderBaselineDisplayName = 'M365 BP Baseline - Defender for Business Security'
 $DefenderCompliancePolicyDisplayName = 'M365 BP Baseline - Defender Device Compliance'
 $DefenderEndpointPolicyDisplayName = 'M365 BP Baseline - Defender Endpoint Protection'
+$SensitivityLabelParentId = 'M365-BP-Baseline-Labels'
 
 function Ensure-RequiredModule {
     param(
@@ -127,18 +143,20 @@ function Ensure-RequiredModule {
 
 function Ensure-GraphConnection {
     Write-Verbose "Ensuring Microsoft Graph connection..."
-    # Scopes for Entra, Conditional Access, and Intune/Defender configuration
+    # Scopes for Entra, Conditional Access, Intune/Defender, and Information Protection
     $graphScopes = @(
         'Policy.ReadWrite.ConditionalAccess',
         'Directory.Read.All',
         'DeviceManagementConfiguration.ReadWrite.All',
-        'DeviceManagementManagedDevices.ReadWrite.All'
+        'DeviceManagementManagedDevices.ReadWrite.All',
+        'InformationProtection.ReadWrite.All'
     )
 
     Ensure-RequiredModule -Name 'Microsoft.Graph.Authentication'
     Ensure-RequiredModule -Name 'Microsoft.Graph.Identity.ConditionalAccess' -MinimumVersion '1.0.0'
     Ensure-RequiredModule -Name 'Microsoft.Graph.Users' -MinimumVersion '1.0.0'
     Ensure-RequiredModule -Name 'Microsoft.Graph.DeviceManagement' -MinimumVersion '1.0.0'
+    Ensure-RequiredModule -Name 'Microsoft.Graph.Security' -MinimumVersion '1.0.0'
 
     Import-Module Microsoft.Graph.Authentication -ErrorAction Stop
 
@@ -509,6 +527,102 @@ function Step-ConfigureDefenderPolicies {
     }
 }
 
+function Step-CreateSensitivityLabels {
+    Write-Host "Step: Creating and publishing sensitivity labels..." -ForegroundColor Cyan
+
+    if (-not $PSCmdlet.ShouldProcess("Create sensitivity labels", "Create and publish labels: $($SensitivityLabelNames -join ', ')")) {
+        Write-Verbose "Skipping sensitivity label creation due to ShouldProcess."
+        return
+    }
+
+    if ($DryRun) {
+        Write-Verbose "DryRun: would create and publish sensitivity labels: $($SensitivityLabelNames -join ', ')"
+        return
+    }
+
+    try {
+        # Define color scheme and protection levels for each label
+        $labelConfigs = @(
+            @{
+                name = $SensitivityLabelNames[0]
+                color = '#90EE90'  # Light green
+                order = 0
+                tooltip = "General use - No special protection required"
+            },
+            @{
+                name = $SensitivityLabelNames[1]
+                color = '#FFD700'  # Gold
+                order = 1
+                tooltip = "Internal use only - Encrypt for organizational members"
+            },
+            @{
+                name = $SensitivityLabelNames[2]
+                color = '#FF6347'  # Tomato red
+                order = 2
+                tooltip = "Highly confidential - Maximum protection and restrictions"
+            }
+        )
+
+        $createdLabelIds = @()
+
+        foreach ($config in $labelConfigs) {
+            Write-Verbose "Creating sensitivity label: $($config.name)"
+
+            $labelBody = @{
+                displayName = $config.name
+                description = $config.tooltip
+                tooltip = $config.tooltip
+                isActive = $true
+                contentFormats = @('file', 'email')
+            }
+
+            try {
+                $label = Invoke-MgGraphRequest -Method POST `
+                    -Uri 'https://graph.microsoft.com/beta/security/informationProtection/sensitivityLabels' `
+                    -Body ($labelBody | ConvertTo-Json -Depth 10) `
+                    -ErrorAction Stop
+
+                if ($label -and $label.id) {
+                    $createdLabelIds += $label.id
+                    Write-Host "Sensitivity label created: $($config.name) (ID: $($label.id))" -ForegroundColor Green
+                }
+            }
+            catch {
+                Write-Warning "Failed to create label '$($config.name)': $_"
+            }
+        }
+
+        # Publish labels to all users if any were created successfully
+        if ($createdLabelIds.Count -gt 0) {
+            Write-Verbose "Publishing $($createdLabelIds.Count) label(s) to all users..."
+            
+            $publishBody = @{
+                labelIds = $createdLabelIds
+                userIds = @('all')  # Publish to all users
+            }
+
+            try {
+                Invoke-MgGraphRequest -Method POST `
+                    -Uri 'https://graph.microsoft.com/beta/security/informationProtection/sensitivityLabels/publish' `
+                    -Body ($publishBody | ConvertTo-Json -Depth 10) `
+                    -ErrorAction Stop | Out-Null
+
+                Write-Host "Sensitivity labels published to all users successfully." -ForegroundColor Green
+            }
+            catch {
+                Write-Warning "Failed to publish labels to users: $_"
+            }
+        }
+        else {
+            Write-Warning "No sensitivity labels were created successfully."
+        }
+
+    }
+    catch {
+        throw "Failed to create or publish sensitivity labels. $_"
+    }
+}
+
 function Step-ReviewLegacyAuth {
     Write-Host "Step: Review legacy authentication and sign-in posture..." -ForegroundColor Cyan
 
@@ -528,7 +642,7 @@ function Step-ReviewLegacyAuth {
 }
 
 # Decide steps
-if (-not $RunAllSteps -and -not $EnableSecurityDefaults -and -not $CreateMfaPolicy -and -not $ReviewLegacyAuth -and -not $DeployDefenderBaseline -and -not $ConfigureDefenderPolicies) {
+if (-not $RunAllSteps -and -not $EnableSecurityDefaults -and -not $CreateMfaPolicy -and -not $ReviewLegacyAuth -and -not $DeployDefenderBaseline -and -not $ConfigureDefenderPolicies -and -not $CreateSensitivityLabels) {
     $RunAllSteps = $true
 }
 
@@ -571,6 +685,12 @@ try {
         }
     }
 
+    if ($CreateSensitivityLabels -or $RunAllSteps) {
+        if ($PSCmdlet.ShouldProcess('CreateSensitivityLabels', "Create and publish sensitivity labels: $($SensitivityLabelNames -join ', ')")) {
+            Step-CreateSensitivityLabels
+        }
+    }
+
     if ($ReviewLegacyAuth -or $RunAllSteps) {
         Step-ReviewLegacyAuth
     }
@@ -582,7 +702,8 @@ try {
     Write-Host "  3. Validate Intune compliance and device health." -ForegroundColor Cyan
     Write-Host "  4. Monitor Defender for Business alerts and threat detections." -ForegroundColor Cyan
     Write-Host "  5. Verify endpoint protection policies are applying to managed devices." -ForegroundColor Cyan
-    Write-Host "  6. Block legacy auth only after verifying client compatibility." -ForegroundColor Cyan
+    Write-Host "  6. Verify sensitivity labels are available in Office 365 clients (Word, Excel, Outlook, Teams)." -ForegroundColor Cyan
+    Write-Host "  7. Block legacy auth only after verifying client compatibility." -ForegroundColor Cyan
 }
 catch {
     Write-Error "Deployment failed: $_"
