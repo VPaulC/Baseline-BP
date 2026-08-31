@@ -1,11 +1,11 @@
 <#
 .SYNOPSIS
-    Deploy M365 baseline: enable security defaults and create a Conditional Access MFA baseline.
+    Deploy M365 baseline: enable security defaults, create a Conditional Access MFA baseline, and configure Defender for Business.
 
 .DESCRIPTION
     This script connects to Microsoft Graph, optionally enables Entra security defaults, creates
-    a Conditional Access policy to require MFA for users, and prints recommended review steps.
-    It supports -WhatIf/-Confirm and verbose output.
+    a Conditional Access policy to require MFA for users, and configures Microsoft Defender for Business
+    security baselines and policies. It supports -WhatIf/-Confirm and verbose output.
 
 .PARAMETER TenantId
     Optional tenant id to connect to.
@@ -25,6 +25,12 @@
 .PARAMETER ReviewLegacyAuth
     Output review checklist for legacy authentication.
 
+.PARAMETER DeployDefenderBaseline
+    Deploy Defender for Business security baseline.
+
+.PARAMETER ConfigureDefenderPolicies
+    Configure Defender for Business endpoint protection and device compliance policies.
+
 .PARAMETER RunAllSteps
     Run all steps (same as specifying all step switches).
 
@@ -39,6 +45,7 @@
 
 .NOTES
     - Requires Microsoft.Graph modules. Script can install missing modules for current user.
+    - Defender for Business configuration requires Intune admin rights.
     - Some Graph scopes require admin consent.
 #>
 
@@ -58,6 +65,10 @@ param(
 
     [switch]$ReviewLegacyAuth,
 
+    [switch]$DeployDefenderBaseline,
+
+    [switch]$ConfigureDefenderPolicies,
+
     [switch]$RunAllSteps,
 
     [switch]$DryRun,
@@ -69,6 +80,9 @@ $ErrorActionPreference = 'Stop'
 
 # Constants
 $MfaPolicyDisplayName = 'M365 BP Baseline - Require MFA for all users'
+$DefenderBaselineDisplayName = 'M365 BP Baseline - Defender for Business Security'
+$DefenderCompliancePolicyDisplayName = 'M365 BP Baseline - Defender Device Compliance'
+$DefenderEndpointPolicyDisplayName = 'M365 BP Baseline - Defender Endpoint Protection'
 
 function Ensure-RequiredModule {
     param(
@@ -113,18 +127,18 @@ function Ensure-RequiredModule {
 
 function Ensure-GraphConnection {
     Write-Verbose "Ensuring Microsoft Graph connection..."
-    # minimal required granular scopes for these operations:
-    # - Policy.ReadWrite.ConditionalAccess (create CA)
-    # - Directory.Read.All (to resolve users) or Directory.ReadWrite.All if you need to create objects
-    # Note: admin consent required for these scopes.
+    # Scopes for Entra, Conditional Access, and Intune/Defender configuration
     $graphScopes = @(
         'Policy.ReadWrite.ConditionalAccess',
-        'Directory.Read.All'
+        'Directory.Read.All',
+        'DeviceManagementConfiguration.ReadWrite.All',
+        'DeviceManagementManagedDevices.ReadWrite.All'
     )
 
     Ensure-RequiredModule -Name 'Microsoft.Graph.Authentication'
     Ensure-RequiredModule -Name 'Microsoft.Graph.Identity.ConditionalAccess' -MinimumVersion '1.0.0'
     Ensure-RequiredModule -Name 'Microsoft.Graph.Users' -MinimumVersion '1.0.0'
+    Ensure-RequiredModule -Name 'Microsoft.Graph.DeviceManagement' -MinimumVersion '1.0.0'
 
     Import-Module Microsoft.Graph.Authentication -ErrorAction Stop
 
@@ -300,6 +314,201 @@ function Step-CreateMfaPolicy {
     }
 }
 
+function Step-DeployDefenderBaseline {
+    Write-Host "Step: Deploying Defender for Business security baseline..." -ForegroundColor Cyan
+
+    if (-not $PSCmdlet.ShouldProcess("Deploy Defender for Business baseline", "Create security baseline configuration")) {
+        Write-Verbose "Skipping Defender baseline deployment due to ShouldProcess."
+        return
+    }
+
+    if ($DryRun) {
+        Write-Verbose "DryRun: would create Defender for Business security baseline."
+        return
+    }
+
+    try {
+        # Get all security baselines to check if one already exists
+        $existingBaselines = Get-MgDeviceManagementDeviceConfiguration -ErrorAction Stop
+        $hasDefenderBaseline = $existingBaselines | Where-Object { $_.DisplayName -eq $DefenderBaselineDisplayName }
+        
+        if ($hasDefenderBaseline) {
+            Write-Host "Defender baseline already exists: $DefenderBaselineDisplayName" -ForegroundColor Yellow
+            return
+        }
+
+        # Create Defender for Business security baseline configuration
+        $defenderBaseline = @{
+            displayName = $DefenderBaselineDisplayName
+            description = 'Baseline configuration for Defender for Business security settings'
+            '@odata.type' = '#microsoft.graph.windows10EndpointProtectionConfiguration'
+            
+            # Windows Defender configuration
+            defenderScanType = 'quick'  # or 'full'
+            defenderScheduledScanTime = '02:00:00'
+            defenderCloudBlockLevel = 'high'
+            defenderCloudBlockLevelRaw = 'high'
+            defenderRealtimeMonitoringEnabled = $true
+            defenderBehaviorMonitoringEnabled = $true
+            
+            # Network protection
+            defenderNetworkProtectionType = 'enabled'
+            
+            # Application Guard
+            applicationGuardEnabled = $true
+            applicationGuardBlockFileTransfers = 'blockBoth'
+            applicationGuardBlockClipboardSharing = 'blockBoth'
+            
+            # Windows Defender SmartScreen
+            smartScreenEnableInShell = $true
+            smartScreenBlockOverrideForFiles = $true
+            
+            # Exploit Guard
+            exploitProtectionOverrideLocalPaths = @()
+            
+            # Firewall settings
+            firewallEnabled = $true
+            firewallPreSharedKeyEncodingMethod = 'deviceDefault'
+            firewallProfileDomain = @{
+                '@odata.type' = '#microsoft.graph.windowsFirewallNetworkProfile'
+                firewallBlocked = $false
+                inboundConnectionsBlocked = $true
+                outboundConnectionsBlocked = $false
+                policyRulesFromGroupPolicyMerged = $true
+                secretPreSharedKeyLength = 64
+            }
+            firewallProfilePrivate = @{
+                '@odata.type' = '#microsoft.graph.windowsFirewallNetworkProfile'
+                firewallBlocked = $false
+                inboundConnectionsBlocked = $true
+                outboundConnectionsBlocked = $false
+                policyRulesFromGroupPolicyMerged = $true
+                secretPreSharedKeyLength = 64
+            }
+            firewallProfilePublic = @{
+                '@odata.type' = '#microsoft.graph.windowsFirewallNetworkProfile'
+                firewallBlocked = $false
+                inboundConnectionsBlocked = $true
+                outboundConnectionsBlocked = $false
+                policyRulesFromGroupPolicyMerged = $true
+                secretPreSharedKeyLength = 64
+            }
+        }
+
+        New-MgDeviceManagementDeviceConfiguration -BodyParameter $defenderBaseline -ErrorAction Stop | Out-Null
+        Write-Host "Defender for Business baseline deployed: $DefenderBaselineDisplayName" -ForegroundColor Green
+    }
+    catch {
+        throw "Failed to deploy Defender for Business baseline. $_"
+    }
+}
+
+function Step-ConfigureDefenderPolicies {
+    Write-Host "Step: Configuring Defender for Business endpoint protection and compliance policies..." -ForegroundColor Cyan
+
+    if (-not $PSCmdlet.ShouldProcess("Configure Defender policies", "Create endpoint protection and device compliance policies")) {
+        Write-Verbose "Skipping Defender policy configuration due to ShouldProcess."
+        return
+    }
+
+    if ($DryRun) {
+        Write-Verbose "DryRun: would create Defender endpoint protection and compliance policies."
+        return
+    }
+
+    try {
+        # 1. Create Endpoint Protection Policy
+        Write-Verbose "Creating Endpoint Protection policy..."
+        
+        $existingPolicies = Get-MgDeviceManagementDeviceConfiguration -ErrorAction Stop
+        $hasEndpointPolicy = $existingPolicies | Where-Object { $_.DisplayName -eq $DefenderEndpointPolicyDisplayName }
+        
+        if (-not $hasEndpointPolicy) {
+            $endpointPolicy = @{
+                displayName = $DefenderEndpointPolicyDisplayName
+                description = 'Baseline Endpoint Protection policy for Defender for Business'
+                '@odata.type' = '#microsoft.graph.windows10EndpointProtectionConfiguration'
+                
+                # Advanced Threat Protection
+                advancedThreatProtectionEnabled = $true
+                
+                # Windows Defender Advanced Threat Protection (ATP)
+                defenderScheduledQuickScanTime = '02:00:00'
+                defenderOfficeMacroCodeAllowedExecutionLevel = 'blockExecutionOfUntrustedMacros'
+                
+                # Controlled Folder Access
+                controlledFolderAccessAllowedApplications = @()
+                controlledFolderAccessProtectedFolders = @()
+            }
+            
+            New-MgDeviceManagementDeviceConfiguration -BodyParameter $endpointPolicy -ErrorAction Stop | Out-Null
+            Write-Host "Endpoint Protection policy created: $DefenderEndpointPolicyDisplayName" -ForegroundColor Green
+        }
+        else {
+            Write-Host "Endpoint Protection policy already exists: $DefenderEndpointPolicyDisplayName" -ForegroundColor Yellow
+        }
+
+        # 2. Create Device Compliance Policy
+        Write-Verbose "Creating Device Compliance policy..."
+        
+        $compliancePolicies = Get-MgDeviceManagementDeviceCompliancePolicy -ErrorAction Stop
+        $hasCompliancePolicy = $compliancePolicies | Where-Object { $_.DisplayName -eq $DefenderCompliancePolicyDisplayName }
+        
+        if (-not $hasCompliancePolicy) {
+            $compliancePolicy = @{
+                displayName = $DefenderCompliancePolicyDisplayName
+                description = 'Baseline Device Compliance policy for Defender for Business'
+                '@odata.type' = '#microsoft.graph.windows10CompliancePolicy'
+                
+                # Windows version compliance
+                osMinimumVersion = '10.0.19041'
+                
+                # Defender compliance
+                defenderEnabled = $true
+                defenderVersion = 'latestAvailable'
+                
+                # Firewall requirements
+                firewallBlocked = $false
+                
+                # Security settings
+                tpmRequired = $false
+                passwordRequired = $true
+                passwordMinimumLength = 12
+                passwordMinutesOfInactivityBeforeLock = 15
+                passwordExpirationDays = 90
+                passwordPreviousPasswordBlockCount = 3
+                
+                # BitLocker
+                bitLockerEnabled = $true
+                
+                # Device Security
+                secureBootEnabled = $true
+                deviceThreatProtectionEnabled = $true
+                deviceThreatProtectionRequiredSecurityLevel = 'medium'
+                
+                # Encryption
+                storageRequireEncryption = $true
+                
+                # Real-time Protection
+                validOperatingSystemBuildRanges = @(@{
+                    lowestVersion = '10.0.19041'
+                    highestVersion = '10.0.22631'
+                })
+            }
+            
+            New-MgDeviceManagementDeviceCompliancePolicy -BodyParameter $compliancePolicy -ErrorAction Stop | Out-Null
+            Write-Host "Device Compliance policy created: $DefenderCompliancePolicyDisplayName" -ForegroundColor Green
+        }
+        else {
+            Write-Host "Device Compliance policy already exists: $DefenderCompliancePolicyDisplayName" -ForegroundColor Yellow
+        }
+
+    }
+    catch {
+        throw "Failed to configure Defender policies. $_"
+    }
+}
+
 function Step-ReviewLegacyAuth {
     Write-Host "Step: Review legacy authentication and sign-in posture..." -ForegroundColor Cyan
 
@@ -319,7 +528,7 @@ function Step-ReviewLegacyAuth {
 }
 
 # Decide steps
-if (-not $RunAllSteps -and -not $EnableSecurityDefaults -and -not $CreateMfaPolicy -and -not $ReviewLegacyAuth) {
+if (-not $RunAllSteps -and -not $EnableSecurityDefaults -and -not $CreateMfaPolicy -and -not $ReviewLegacyAuth -and -not $DeployDefenderBaseline -and -not $ConfigureDefenderPolicies) {
     $RunAllSteps = $true
 }
 
@@ -350,6 +559,18 @@ try {
         }
     }
 
+    if ($DeployDefenderBaseline -or $RunAllSteps) {
+        if ($PSCmdlet.ShouldProcess('DeployDefenderBaseline', 'Deploy Defender for Business baseline')) {
+            Step-DeployDefenderBaseline
+        }
+    }
+
+    if ($ConfigureDefenderPolicies -or $RunAllSteps) {
+        if ($PSCmdlet.ShouldProcess('ConfigureDefenderPolicies', 'Configure Defender endpoint protection and compliance policies')) {
+            Step-ConfigureDefenderPolicies
+        }
+    }
+
     if ($ReviewLegacyAuth -or $RunAllSteps) {
         Step-ReviewLegacyAuth
     }
@@ -359,7 +580,9 @@ try {
     Write-Host "  1. Review sign-in logs for 24-48 hours after enforcement." -ForegroundColor Cyan
     Write-Host "  2. Confirm break-glass accounts are excluded appropriately." -ForegroundColor Cyan
     Write-Host "  3. Validate Intune compliance and device health." -ForegroundColor Cyan
-    Write-Host "  4. Block legacy auth only after verifying client compatibility." -ForegroundColor Cyan
+    Write-Host "  4. Monitor Defender for Business alerts and threat detections." -ForegroundColor Cyan
+    Write-Host "  5. Verify endpoint protection policies are applying to managed devices." -ForegroundColor Cyan
+    Write-Host "  6. Block legacy auth only after verifying client compatibility." -ForegroundColor Cyan
 }
 catch {
     Write-Error "Deployment failed: $_"
