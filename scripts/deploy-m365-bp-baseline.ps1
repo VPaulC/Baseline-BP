@@ -1,11 +1,12 @@
 <#
 .SYNOPSIS
-    Deploy M365 baseline: enable security defaults, create a Conditional Access MFA baseline, configure Defender for Business, and manage sensitivity labels.
+    Deploy M365 baseline: enable security defaults, create a Conditional Access MFA baseline, configure Defender for Business, manage sensitivity labels, and create DLP policies.
 
 .DESCRIPTION
     This script connects to Microsoft Graph, optionally enables Entra security defaults, creates
     a Conditional Access policy to require MFA for users, configures Microsoft Defender for Business
-    security baselines and policies, and creates/publishes sensitivity labels. It supports -WhatIf/-Confirm and verbose output.
+    security baselines and policies, creates/publishes sensitivity labels, and deploys Data Loss Prevention
+    policies. It supports -WhatIf/-Confirm and verbose output.
 
 .PARAMETER TenantId
     Optional tenant id to connect to.
@@ -38,6 +39,9 @@
 .PARAMETER CreateSensitivityLabels
     Create and publish sensitivity labels specified in -SensitivityLabelNames.
 
+.PARAMETER CreateDlpPolicies
+    Create Data Loss Prevention policies (Copilot blocking and external sharing restriction).
+
 .PARAMETER RunAllSteps
     Run all steps (same as specifying all step switches).
 
@@ -51,12 +55,13 @@
     .\deploy-m365-bp-baseline.ps1 -TenantId 'contoso.onmicrosoft.com' -BreakGlassUsers 'break@contoso.com' -RunAllSteps -Verbose
 
 .EXAMPLE
-    .\deploy-m365-bp-baseline.ps1 -SensitivityLabelNames 'Public', 'Internal', 'Secret' -CreateSensitivityLabels -Verbose
+    .\deploy-m365-bp-baseline.ps1 -SensitivityLabelNames 'Public', 'Internal', 'Secret' -CreateSensitivityLabels -CreateDlpPolicies -Verbose
 
 .NOTES
     - Requires Microsoft.Graph modules. Script can install missing modules for current user.
     - Defender for Business configuration requires Intune admin rights.
     - Sensitivity label configuration requires Information Protection admin rights.
+    - DLP policy creation requires Compliance admin rights.
     - Some Graph scopes require admin consent.
 #>
 
@@ -84,6 +89,8 @@ param(
 
     [switch]$CreateSensitivityLabels,
 
+    [switch]$CreateDlpPolicies,
+
     [switch]$RunAllSteps,
 
     [switch]$DryRun,
@@ -98,6 +105,8 @@ $MfaPolicyDisplayName = 'M365 BP Baseline - Require MFA for all users'
 $DefenderBaselineDisplayName = 'M365 BP Baseline - Defender for Business Security'
 $DefenderCompliancePolicyDisplayName = 'M365 BP Baseline - Defender Device Compliance'
 $DefenderEndpointPolicyDisplayName = 'M365 BP Baseline - Defender Endpoint Protection'
+$DlpCopilotPolicyName = 'M365 BP Baseline - Block Copilot from Confidential Content'
+$DlpExternalSharePolicyName = 'M365 BP Baseline - Block External Sharing of Sensitive Labels'
 $SensitivityLabelParentId = 'M365-BP-Baseline-Labels'
 
 function Ensure-RequiredModule {
@@ -143,13 +152,14 @@ function Ensure-RequiredModule {
 
 function Ensure-GraphConnection {
     Write-Verbose "Ensuring Microsoft Graph connection..."
-    # Scopes for Entra, Conditional Access, Intune/Defender, and Information Protection
+    # Scopes for Entra, Conditional Access, Intune/Defender, Information Protection, and Compliance
     $graphScopes = @(
         'Policy.ReadWrite.ConditionalAccess',
         'Directory.Read.All',
         'DeviceManagementConfiguration.ReadWrite.All',
         'DeviceManagementManagedDevices.ReadWrite.All',
-        'InformationProtection.ReadWrite.All'
+        'InformationProtection.ReadWrite.All',
+        'DlpEvaluate.ReadWrite'
     )
 
     Ensure-RequiredModule -Name 'Microsoft.Graph.Authentication'
@@ -623,6 +633,129 @@ function Step-CreateSensitivityLabels {
     }
 }
 
+function Step-CreateDlpPolicies {
+    Write-Host "Step: Creating Data Loss Prevention (DLP) policies..." -ForegroundColor Cyan
+
+    if (-not $PSCmdlet.ShouldProcess("Create DLP policies", "Block Copilot from Confidential content and block external sharing of sensitive labels")) {
+        Write-Verbose "Skipping DLP policy creation due to ShouldProcess."
+        return
+    }
+
+    if ($DryRun) {
+        Write-Verbose "DryRun: would create DLP policies: Copilot blocking and external sharing restrictions."
+        return
+    }
+
+    try {
+        # Get the Confidential and Internal label names
+        $confidentialLabel = $SensitivityLabelNames[2]  # Typically 'Confidential'
+        $internalLabel = $SensitivityLabelNames[1]      # Typically 'Internal'
+
+        # 1. DLP Policy: Block Copilot from using Confidential content
+        Write-Verbose "Creating DLP policy to block Copilot from Confidential labeled content..."
+
+        $copilotBlockPolicy = @{
+            displayName = $DlpCopilotPolicyName
+            description = "Prevents Copilot from accessing content labeled as $confidentialLabel"
+            isEnabled = $true
+            mode = 'Enable'
+            rules = @(
+                @{
+                    name = "Block Copilot from Confidential"
+                    conditions = @{
+                        sensitivityLabels = @($confidentialLabel)
+                    }
+                    actions = @(
+                        @{
+                            type = 'Block'
+                            userOverride = $false
+                            notifyUser = $true
+                            actionParameters = @{
+                                recipients = @()
+                            }
+                        }
+                    )
+                }
+            )
+            conditionalAccessRules = @(
+                @{
+                    condition = "app:Copilot"
+                    restrictions = @('access')
+                }
+            )
+        }
+
+        try {
+            $copilotPolicy = Invoke-MgGraphRequest -Method POST `
+                -Uri 'https://graph.microsoft.com/beta/security/dataLossPreventionPolicies' `
+                -Body ($copilotBlockPolicy | ConvertTo-Json -Depth 10) `
+                -ErrorAction Stop
+
+            if ($copilotPolicy) {
+                Write-Host "DLP Policy created: $DlpCopilotPolicyName" -ForegroundColor Green
+            }
+        }
+        catch {
+            Write-Warning "Failed to create Copilot blocking DLP policy: $_"
+        }
+
+        # 2. DLP Policy: Block external sharing of Confidential and Internal content
+        Write-Verbose "Creating DLP policy to block external sharing of sensitive labeled content..."
+
+        $externalSharePolicy = @{
+            displayName = $DlpExternalSharePolicyName
+            description = "Prevents sharing of content labeled as $confidentialLabel or $internalLabel with external users"
+            isEnabled = $true
+            mode = 'Enable'
+            rules = @(
+                @{
+                    name = "Block External Sharing of Sensitive Labels"
+                    conditions = @{
+                        sensitivityLabels = @($confidentialLabel, $internalLabel)
+                    }
+                    actions = @(
+                        @{
+                            type = 'Block'
+                            userOverride = $false
+                            notifyUser = $true
+                            actionParameters = @{
+                                recipients = @()
+                                comment = "This content is too sensitive to share externally"
+                            }
+                        }
+                    )
+                }
+            )
+            conditionalAccessRules = @(
+                @{
+                    condition = "sharingWith:ExternalUsers"
+                    restrictions = @('share')
+                }
+            )
+        }
+
+        try {
+            $sharePolicy = Invoke-MgGraphRequest -Method POST `
+                -Uri 'https://graph.microsoft.com/beta/security/dataLossPreventionPolicies' `
+                -Body ($externalSharePolicy | ConvertTo-Json -Depth 10) `
+                -ErrorAction Stop
+
+            if ($sharePolicy) {
+                Write-Host "DLP Policy created: $DlpExternalSharePolicyName" -ForegroundColor Green
+            }
+        }
+        catch {
+            Write-Warning "Failed to create external sharing blocking DLP policy: $_"
+        }
+
+        Write-Host "DLP policies deployment complete." -ForegroundColor Green
+
+    }
+    catch {
+        throw "Failed to create DLP policies. $_"
+    }
+}
+
 function Step-ReviewLegacyAuth {
     Write-Host "Step: Review legacy authentication and sign-in posture..." -ForegroundColor Cyan
 
@@ -642,7 +775,7 @@ function Step-ReviewLegacyAuth {
 }
 
 # Decide steps
-if (-not $RunAllSteps -and -not $EnableSecurityDefaults -and -not $CreateMfaPolicy -and -not $ReviewLegacyAuth -and -not $DeployDefenderBaseline -and -not $ConfigureDefenderPolicies -and -not $CreateSensitivityLabels) {
+if (-not $RunAllSteps -and -not $EnableSecurityDefaults -and -not $CreateMfaPolicy -and -not $ReviewLegacyAuth -and -not $DeployDefenderBaseline -and -not $ConfigureDefenderPolicies -and -not $CreateSensitivityLabels -and -not $CreateDlpPolicies) {
     $RunAllSteps = $true
 }
 
@@ -691,6 +824,12 @@ try {
         }
     }
 
+    if ($CreateDlpPolicies -or $RunAllSteps) {
+        if ($PSCmdlet.ShouldProcess('CreateDlpPolicies', 'Create Data Loss Prevention policies')) {
+            Step-CreateDlpPolicies
+        }
+    }
+
     if ($ReviewLegacyAuth -or $RunAllSteps) {
         Step-ReviewLegacyAuth
     }
@@ -703,7 +842,8 @@ try {
     Write-Host "  4. Monitor Defender for Business alerts and threat detections." -ForegroundColor Cyan
     Write-Host "  5. Verify endpoint protection policies are applying to managed devices." -ForegroundColor Cyan
     Write-Host "  6. Verify sensitivity labels are available in Office 365 clients (Word, Excel, Outlook, Teams)." -ForegroundColor Cyan
-    Write-Host "  7. Block legacy auth only after verifying client compatibility." -ForegroundColor Cyan
+    Write-Host "  7. Monitor DLP policy violations and user notifications." -ForegroundColor Cyan
+    Write-Host "  8. Block legacy auth only after verifying client compatibility." -ForegroundColor Cyan
 }
 catch {
     Write-Error "Deployment failed: $_"
