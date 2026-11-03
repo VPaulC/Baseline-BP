@@ -1,6 +1,24 @@
 # Microsoft 365 Business Premium Security Baseline
 
-This repository contains a comprehensive deployment runbook and a PowerShell helper script for Microsoft 365 Business Premium based on Microsoft and industry best practices. The script enables security defaults, Conditional Access MFA, Defender for Business, Sensitivity Labels, and Data Loss Prevention (DLP) policies.
+This repository contains a comprehensive deployment runbook and a PowerShell helper script for Microsoft 365 Business Premium based on Microsoft and industry best practices. The script enables security defaults, MFA enforcement, Defender for Business hardening, sensitivity labels, and DLP policies in a guided baseline sequence.
+
+## Recent Fix
+
+A step-selection logic issue in `scripts/deploy-m365-bp-baseline.ps1` was fixed.
+
+### What was fixed
+- Repaired the default-step condition used when no explicit step switches are passed.
+- Ensured the fallback check includes all current step switches:
+  - `-EnableSecurityDefaults`
+  - `-CreateMfaPolicy`
+  - `-ReviewLegacyAuth`
+  - `-DeployDefenderBaseline`
+  - `-ConfigureDefenderPolicies`
+  - `-CreateSensitivityLabels`
+  - `-CreateDlpPolicies`
+
+### Behavior after fix
+- If no step switches are provided, the script now reliably sets `-RunAllSteps` behavior (`$RunAllSteps = $true`) and executes the full baseline sequence as intended.
 
 ## The Complete Baseline
 
