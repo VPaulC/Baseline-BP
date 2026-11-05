@@ -1,36 +1,23 @@
 # Microsoft 365 Business Premium Security Baseline
 
-This repository contains a comprehensive deployment runbook and a PowerShell helper script for Microsoft 365 Business Premium based on Microsoft and industry best practices. The script enables security defaults, MFA enforcement, Defender for Business hardening, sensitivity labels, and DLP policies in a guided baseline sequence.
+This repository contains a deployment runbook and PowerShell helper script for Microsoft 365 Business Premium based on Microsoft and industry best practices. The script can configure Entra MFA protections, Defender for Business, sensitivity labels and DLP policies; review the operational warning below before selecting steps.
 
-## Recent Fix
+## Important deployment guidance
 
-A step-selection logic issue in `scripts/deploy-m365-bp-baseline.ps1` was fixed.
+This script can make tenant-wide changes. Review the script and pilot each selected step in a test tenant or a controlled group before production. `-DryRun` and `-WhatIf` are previews, not substitutes for reviewing the requested scopes, policy content, licensing and expected impact.
 
-### What was fixed
-- Repaired the default-step condition used when no explicit step switches are passed.
-- Ensured the fallback check includes all current step switches:
-  - `-EnableSecurityDefaults`
-  - `-CreateMfaPolicy`
-  - `-ReviewLegacyAuth`
-  - `-DeployDefenderBaseline`
-  - `-ConfigureDefenderPolicies`
-  - `-CreateSensitivityLabels`
-  - `-CreateDlpPolicies`
-
-### Behavior after fix
-- If no step switches are provided, the script now reliably sets `-RunAllSteps` behavior (`$RunAllSteps = $true`) and executes the full baseline sequence as intended.
+**Do not enable Microsoft Entra Security Defaults and Conditional Access policies at the same time.** They are mutually exclusive. The script's full sequence (`-RunAllSteps`) attempts both `-EnableSecurityDefaults` and `-CreateMfaPolicy`, and the script runs the full sequence when no step switches are supplied. Choose one MFA approach for the tenant; do not use `-RunAllSteps` or omit step switches. For a tenant using Conditional Access, select the reviewed steps you need and exclude `-EnableSecurityDefaults`. For a tenant using Security Defaults, exclude `-CreateMfaPolicy`.
 
 ## The Complete Baseline
 
 The script deploys the following security components:
 
-1. **Microsoft Entra Security Defaults** – Enable baseline security protections
-2. **Conditional Access MFA Policy** – Require MFA for all users (with break-glass exclusions)
-3. **Defender for Business Security Baseline** – Configure Windows Defender, Firewall, SmartScreen, and Application Guard
-4. **Defender Policies** – Device compliance and endpoint protection policies via Intune
-5. **Sensitivity Labels** – Create and publish custom sensitivity labels (General, Internal, Confidential) to all users
-6. **DLP Policies** – Prevent Copilot from accessing Confidential content and block external sharing of sensitive labels
-7. **Legacy Auth Review** – Checklist and commands to validate authentication posture
+1. **Choose one Entra MFA approach:** Microsoft Entra Security Defaults *or* a Conditional Access MFA policy (with break-glass exclusions); never both.
+2. **Defender for Business Security Baseline** – Configure Windows Defender, Firewall, SmartScreen, and Application Guard
+3. **Defender Policies** – Device compliance and endpoint protection policies via Intune
+4. **Sensitivity Labels** – Create and publish custom sensitivity labels (General, Internal, Confidential) to all users
+5. **DLP Policies** – Configure the repository's proposed Copilot and external-sharing protections; validate current service support and policy behavior before enforcement
+6. **Legacy Auth Review** – Checklist and commands to validate authentication posture
 
 This approach keeps the tenant secure quickly while leaving room for formal design review and pilot validation.
 
@@ -84,7 +71,7 @@ code unchanged: newer versions replace older installations, and downgrades are
 blocked. CI verifies payload integrity, shortcuts, offline script execution,
 repair, and complete uninstallation without connecting to Microsoft 365.
 
-Run this from PowerShell 7+ (or Windows PowerShell) as a Global Administrator, Security Administrator, or Compliance Administrator, or with a service principal that has the required Graph consents.
+Run this from PowerShell 7+ (or Windows PowerShell) as an appropriately privileged administrator, or with a service principal that has the required Graph consents. Required roles vary by step: Conditional Access, Intune/Defender, sensitivity labels and DLP each require their own administrative roles and consent. The role examples are not interchangeable guarantees that every step will succeed.
 
 The script supports:
 - `-WhatIf/-Confirm` for ShouldProcess simulation
@@ -94,36 +81,42 @@ The script supports:
 
 ### Quick Start Examples
 
-**Preview all changes (no modifications):**
+**Run the offline legacy-auth review only (no sign-in or tenant changes):**
 ```powershell
-pwsh -NoProfile -ExecutionPolicy Bypass -File .\scripts\deploy-m365-bp-baseline.ps1 -RunAllSteps -DryRun -Verbose
+pwsh -NoProfile -ExecutionPolicy Bypass -File .\scripts\deploy-m365-bp-baseline.ps1 -ReviewLegacyAuth -SkipGraphConnection -DryRun -Verbose
 ```
 
-**Preview using PowerShell's WhatIf/Confirm:**
-```powershell
-pwsh -NoProfile -ExecutionPolicy Bypass -File .\scripts\deploy-m365-bp-baseline.ps1 -RunAllSteps -WhatIf -Verbose
-```
-
-**Run everything (interactive sign-in):**
-```powershell
-pwsh -NoProfile -ExecutionPolicy Bypass -File .\scripts\deploy-m365-bp-baseline.ps1 -TenantId "contoso.onmicrosoft.com" -RunAllSteps -Verbose
-```
-
-**Run with transcript for audit:**
-```powershell
-pwsh -NoProfile -ExecutionPolicy Bypass -File .\scripts\deploy-m365-bp-baseline.ps1 -RunAllSteps -StartTranscript -Verbose
-```
-
-**Deploy only MFA and security defaults:**
+**Create only the Conditional Access MFA policy (after choosing Conditional Access instead of Security Defaults):**
 ```powershell
 pwsh -NoProfile -ExecutionPolicy Bypass -File .\scripts\deploy-m365-bp-baseline.ps1 `
-  -EnableSecurityDefaults -CreateMfaPolicy -Verbose
+  -TenantId "contoso.onmicrosoft.com" `
+  -BreakGlassUsers "breakglass1@contoso.com","breakglass2@contoso.com" `
+  -CreateMfaPolicy -Verbose
 ```
 
-**Deploy Defender and device compliance:**
+**Enable Security Defaults instead (do not also create a Conditional Access MFA policy):**
+```powershell
+pwsh -NoProfile -ExecutionPolicy Bypass -File .\scripts\deploy-m365-bp-baseline.ps1 `
+  -TenantId "contoso.onmicrosoft.com" -EnableSecurityDefaults -Verbose
+```
+
+**Run the Conditional Access step with a transcript for audit:**
+```powershell
+pwsh -NoProfile -ExecutionPolicy Bypass -File .\scripts\deploy-m365-bp-baseline.ps1 `
+  -TenantId "contoso.onmicrosoft.com" -CreateMfaPolicy -StartTranscript -Verbose
+```
+
+**Configure Defender and device compliance (review impact and licensing before deployment):**
 ```powershell
 pwsh -NoProfile -ExecutionPolicy Bypass -File .\scripts\deploy-m365-bp-baseline.ps1 `
   -DeployDefenderBaseline -ConfigureDefenderPolicies -Verbose
+```
+
+**Run the selected Conditional Access, Defender and label steps (Security Defaults is intentionally omitted):**
+```powershell
+pwsh -NoProfile -ExecutionPolicy Bypass -File .\scripts\deploy-m365-bp-baseline.ps1 `
+  -CreateMfaPolicy -DeployDefenderBaseline -ConfigureDefenderPolicies `
+  -CreateSensitivityLabels -CreateDlpPolicies -ReviewLegacyAuth -Verbose
 ```
 
 **Create and publish sensitivity labels:**
@@ -154,7 +147,7 @@ The script accepts `-BreakGlassUsers` with UPNs or Azure AD object IDs. UPNs are
 pwsh -NoProfile -ExecutionPolicy Bypass -File .\scripts\deploy-m365-bp-baseline.ps1 `
   -TenantId "<tenant-guid>" `
   -BreakGlassUsers "breakglass1@contoso.com","breakglass2@contoso.com" `
-  -RunAllSteps -Verbose
+  -CreateMfaPolicy -Verbose
 ```
 
 Keep the exclusion list very small and controlled. Do not exclude regular administrators, service accounts, or large groups unless you have a documented reason.
@@ -246,8 +239,7 @@ Labels are available in:
 
 - Verifies and optionally installs required Microsoft Graph PowerShell modules
 - Connects to Microsoft Graph with minimal required scopes
-- Enables Microsoft Entra security defaults (via Graph)
-- Creates a Conditional Access policy requiring MFA for all users
+- Enables Microsoft Entra security defaults **or** creates a Conditional Access policy requiring MFA for all users (choose one; do not run both)
 - Deploys Defender for Business security baseline configuration
 - Creates and publishes device compliance and endpoint protection policies
 - Creates sensitivity labels with custom names
@@ -274,9 +266,9 @@ When using a service principal, ensure these scopes are granted via app registra
 
 ### Phase 1: Assessment (1-2 days)
 1. Review the script in DryRun mode
-2. Identify break-glass accounts
-3. Check for legacy authentication usage
-4. Verify Defender agent deployment status
+2. Decide whether the tenant will use Security Defaults or Conditional Access MFA; never enable both.
+3. Identify and validate break-glass accounts and exclusions.
+4. Check for legacy authentication usage and verify Defender agent deployment status.
 
 ### Phase 2: Pilot (1-2 weeks)
 1. Run the script on a pilot tenant or group
@@ -287,7 +279,7 @@ When using a service principal, ensure these scopes are granted via app registra
 
 ### Phase 3: Production Rollout
 1. Confirm pilot validation successful
-2. Run the script with full `-RunAllSteps` for production
+2. Run only the reviewed step switches for production; select Security Defaults or Conditional Access MFA, never both
 3. Monitor policy compliance dashboard
 4. Watch DLP policy violation reports
 5. Validate device compliance across managed devices
