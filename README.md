@@ -38,7 +38,7 @@ This approach keeps the tenant secure quickly while leaving room for formal desi
 
 ### Windows MSI Installer
 
-The x64, per-machine MSI installs this README and the unchanged deployment script
+The x64, per-machine MSI installs this README and the deployment script
 under `C:\Program Files\M365 BP Baseline`, with Start menu shortcuts for the
 documentation and a PowerShell console. **Installation does not sign in, install
 Graph modules, or apply any tenant policies.** The console shortcut only opens
