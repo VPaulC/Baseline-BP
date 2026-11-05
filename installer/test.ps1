@@ -52,7 +52,7 @@ try {
     $console = $shell.CreateShortcut((Join-Path $menuDirectory 'M365 BP Baseline - PowerShell.lnk'))
     Assert-Condition ($console.TargetPath -eq "$env:ProgramFiles\PowerShell\7\pwsh.exe") 'Console shortcut has the wrong PowerShell target.'
     Assert-Condition ($console.Arguments -eq '-NoLogo -NoProfile -NoExit') 'Console shortcut must not execute the deployment script.'
-    Assert-Condition ($console.WorkingDirectory -eq $installDirectory) 'Console shortcut has the wrong working directory.'
+    Assert-Condition ($console.WorkingDirectory.TrimEnd('\') -eq $installDirectory.TrimEnd('\')) "Console shortcut has the wrong working directory: '$($console.WorkingDirectory)' (expected '$installDirectory')."
     $documentation = $shell.CreateShortcut((Join-Path $menuDirectory 'M365 BP Baseline - Documentation.lnk'))
     Assert-Condition ($documentation.TargetPath -eq (Join-Path $installDirectory 'README.md')) 'Documentation shortcut has the wrong target.'
     Assert-Condition ((Get-ItemProperty 'HKLM:\Software\VPaulC\M365BPBaseline').Installed -eq 1) 'Installation registry marker is missing.'
