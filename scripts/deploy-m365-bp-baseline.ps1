@@ -239,7 +239,7 @@ function Resolve-BreakGlassUserIds {
             }
         }
         catch {
-            Write-Warning "Failed to resolve $u: $_"
+            Write-Warning "Failed to resolve ${u}: $_"
         }
     }
     return $resolved

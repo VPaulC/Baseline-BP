@@ -1,0 +1,53 @@
+name: Windows installer
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.config/dotnet-tools.json'
+      - '.github/workflows/windows-installer.yml'
+      - 'installer/**'
+      - 'scripts/**'
+      - 'README.md'
+  pull_request:
+    paths:
+      - '.config/dotnet-tools.json'
+      - '.github/workflows/windows-installer.yml'
+      - 'installer/**'
+      - 'scripts/**'
+      - 'README.md'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build-and-test:
+    name: Build and test x64 MSI
+    runs-on: windows-2022
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '8.0.x'
+      - name: Build MSI
+        shell: pwsh
+        run: ./installer/build.ps1
+      - name: Test installation, repair, and uninstall
+        shell: pwsh
+        run: ./installer/test.ps1 -MsiPath ./artifacts/M365-BP-Baseline-1.0.0-x64.msi
+      - name: Upload installer
+        uses: actions/upload-artifact@v4
+        with:
+          name: M365-BP-Baseline-1.0.0-x64
+          path: artifacts/*.msi
+          if-no-files-found: error
+          retention-days: 90
+      - name: Upload diagnostic logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: installer-logs
+          path: artifacts/*.log
+          if-no-files-found: ignore

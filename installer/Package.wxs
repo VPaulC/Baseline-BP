@@ -1,0 +1,63 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Wix xmlns="http://wixtoolset.org/schemas/v4/wxs">
+  <Package Name="M365 Business Premium Security Baseline"
+           Manufacturer="VPaulC"
+           Version="$(var.ProductVersion)"
+           UpgradeCode="E03D80F8-B815-45BC-86DD-8579CD5D3B72"
+           Scope="perMachine"
+           InstallerVersion="500">
+    <MajorUpgrade DowngradeErrorMessage="A newer version of M365 Business Premium Security Baseline is already installed." />
+    <MediaTemplate EmbedCab="yes" />
+
+    <Property Id="ARPCOMMENTS" Value="Installs the deployment script only. Tenant policies are applied only when you explicitly run the script." />
+    <Property Id="ARPURLINFOABOUT" Value="https://github.com/VPaulC/Baseline-BP" />
+    <Property Id="ARPNOMODIFY" Value="1" />
+    <Property Id="INSTALLFOLDER" Secure="yes" />
+    <Property Id="POWERSHELL7EXE">
+      <DirectorySearch Id="PowerShell7Directory" Path="[ProgramFiles64Folder]PowerShell\7" Depth="0">
+        <FileSearch Id="PowerShell7Executable" Name="pwsh.exe" MinVersion="7.0.0.0" />
+      </DirectorySearch>
+    </Property>
+    <Launch Condition="Installed OR POWERSHELL7EXE"
+            Message="Install x64 PowerShell 7 in its standard Program Files\PowerShell\7 location before installing this package. See https://aka.ms/powershell-release?tag=stable" />
+
+    <StandardDirectory Id="ProgramFiles64Folder">
+      <Directory Id="INSTALLFOLDER" Name="M365 BP Baseline">
+        <Component Id="ReadmeComponent" Guid="*">
+          <File Id="ReadmeFile" Source="$(var.SourceRoot)\README.md" KeyPath="yes" />
+        </Component>
+        <Directory Id="ScriptsFolder" Name="scripts">
+          <Component Id="DeploymentScriptComponent" Guid="*">
+            <File Id="DeploymentScriptFile" Source="$(var.SourceRoot)\scripts\deploy-m365-bp-baseline.ps1" KeyPath="yes" />
+          </Component>
+        </Directory>
+      </Directory>
+    </StandardDirectory>
+
+    <StandardDirectory Id="ProgramMenuFolder">
+      <Directory Id="ApplicationMenuFolder" Name="M365 BP Baseline">
+        <Component Id="ShortcutsComponent" Guid="*">
+          <Shortcut Id="PowerShellConsoleShortcut"
+                    Name="M365 BP Baseline - PowerShell"
+                    Description="Open PowerShell in the installation directory. No tenant changes are applied automatically."
+                    Target="[POWERSHELL7EXE]"
+                    Arguments="-NoLogo -NoProfile -NoExit"
+                    WorkingDirectory="INSTALLFOLDER" />
+          <Shortcut Id="DocumentationShortcut"
+                    Name="M365 BP Baseline - Documentation"
+                    Target="[#ReadmeFile]"
+                    WorkingDirectory="INSTALLFOLDER" />
+          <RemoveFolder Id="RemoveApplicationMenuFolder" On="uninstall" />
+          <RegistryValue Root="HKLM" Key="Software\VPaulC\M365BPBaseline"
+                         Name="Installed" Type="integer" Value="1" KeyPath="yes" />
+        </Component>
+      </Directory>
+    </StandardDirectory>
+
+    <Feature Id="Complete" Title="M365 BP Baseline" Level="1">
+      <ComponentRef Id="ReadmeComponent" />
+      <ComponentRef Id="DeploymentScriptComponent" />
+      <ComponentRef Id="ShortcutsComponent" />
+    </Feature>
+  </Package>
+</Wix>

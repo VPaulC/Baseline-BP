@@ -36,6 +36,54 @@ This approach keeps the tenant secure quickly while leaving room for formal desi
 
 ## PowerShell Deployment
 
+### Windows MSI Installer
+
+The x64, per-machine MSI installs this README and the deployment script
+under `C:\Program Files\M365 BP Baseline`, with Start menu shortcuts for the
+documentation and a PowerShell console. **Installation does not sign in, install
+Graph modules, or apply any tenant policies.** The console shortcut only opens
+PowerShell in the installation directory; run the script explicitly using the
+examples below.
+
+Install x64 PowerShell 7 first in its standard
+`C:\Program Files\PowerShell\7` location. The MSI requires administrator elevation
+and checks for this prerequisite; it does not download or install PowerShell.
+Microsoft Graph modules are still managed by the deployment script when you run it.
+
+Download `M365-BP-Baseline-1.0.0-x64.msi` from the
+`M365-BP-Baseline-1.0.0-x64` artifact of a successful **Windows installer** run
+on the repository's Actions tab. Unzip the artifact before installing. Artifacts
+are retained for 90 days; the workflow can also be run manually to rebuild them.
+These builds are unsigned; follow your organization's software approval policy.
+
+For managed deployment, run these commands from an elevated terminal:
+
+```powershell
+msiexec.exe /i "M365-BP-Baseline-1.0.0-x64.msi" /qn /norestart /L*v "$env:TEMP\m365-bp-install.log"
+msiexec.exe /x "M365-BP-Baseline-1.0.0-x64.msi" /qn /norestart /L*v "$env:TEMP\m365-bp-uninstall.log"
+```
+
+Exit codes `0` and `3010` mean success (the latter requests a restart). Uninstall
+removes installed files and shortcuts, **not** tenant policies, Graph modules,
+or PowerShell. The installed directory is read-only to standard users. To use
+`-StartTranscript`, first copy the script to a user-writable directory because
+the deployment script writes transcripts alongside itself.
+
+To build locally on Windows, install the .NET 8 SDK and x64 PowerShell 7, then run:
+
+```powershell
+pwsh -NoProfile -File .\installer\build.ps1
+# On a clean test machine, in an elevated PowerShell 7 session:
+.\installer\test.ps1 -MsiPath .\artifacts\M365-BP-Baseline-1.0.0-x64.msi
+```
+
+The build restores the pinned WiX tool and produces a self-contained MSI in
+`artifacts`. Use `-Version major.minor.build` when building an update, and update
+the workflow's package filename and artifact name to match. Keep the MSI upgrade
+code unchanged: newer versions replace older installations, and downgrades are
+blocked. CI verifies payload integrity, shortcuts, offline script execution,
+repair, and complete uninstallation without connecting to Microsoft 365.
+
 Run this from PowerShell 7+ (or Windows PowerShell) as a Global Administrator, Security Administrator, or Compliance Administrator, or with a service principal that has the required Graph consents.
 
 The script supports:
